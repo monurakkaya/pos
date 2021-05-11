@@ -6,6 +6,7 @@ namespace Mews\Pos\Factory;
 
 use Mews\Pos\Entity\Account\EstPosAccount;
 use Mews\Pos\Entity\Account\GarantiPosAccount;
+use Mews\Pos\Entity\Account\Get724PosAccount;
 use Mews\Pos\Entity\Account\PayForAccount;
 use Mews\Pos\Entity\Account\PosNetAccount;
 use Mews\Pos\Exceptions\MissingAccountInfoException;
@@ -90,6 +91,23 @@ class AccountFactory
         self::checkParameters($model, $storeKey);
 
         return new PosNetAccount($bank, $model, $clientId, $username, $password, $lang, $terminalId, $posNetId, $storeKey);
+    }
+
+    /**
+     * @param string $bank
+     * @param string $clientId
+     * @param string $username
+     * @param string $password
+     * @param string $merchantId
+     * @param string $terminalNo
+     * @param string $model
+     * @param string|null $storeKey
+     * @param string $lang
+     * @return Get724PosAccount
+     */
+    public static function createGet724PosAccount(string $bank, string $clientId, string $username, string $password, string $merchantId, string $terminalNo, string $model = 'regular', ?string $storeKey = null, string $lang = 'tr'): Get724PosAccount
+    {
+        return new Get724PosAccount($bank, $model, $merchantId, $terminalNo, $password, $lang, $storeKey);
     }
 
     private static function checkParameters($model, $storeKey)

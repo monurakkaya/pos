@@ -662,11 +662,11 @@ class PayForPos extends AbstractGateway
 
     /**
      * returns common form data used by all 3D payment gates
-     * @param bool $withCrediCard
+     *
      *
      * @return array
      */
-    protected function getCommon3DFormData($withCrediCard = false)
+    protected function getCommon3DFormData()
     {
         $inputs = [
             'MbrId' => self::MBR_ID,
@@ -685,7 +685,7 @@ class PayForPos extends AbstractGateway
             'Hash' => $this->order->hash,
         ];
 
-        if ($withCrediCard) {
+        if (!is_null($this->card)) {
             $inputs['CardHolderName'] = $this->card->getHolderName();
             $inputs['Pan'] = $this->card->getNumber();
             $inputs['Expiry'] = $this->card->getExpirationDate();
