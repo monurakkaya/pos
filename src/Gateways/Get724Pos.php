@@ -203,9 +203,11 @@ class Get724Pos extends AbstractGateway
             if ($mpiRequest['status'] === true) {
                 unset($mpiRequest['status']);
                 return $mpiRequest;
+            } else {
+                if ($this->accepts2DPayments()) {
+                    //todo
+                }
             }
-        } else {
-
         }
 
         return [
@@ -380,5 +382,10 @@ class Get724Pos extends AbstractGateway
         $this->data = $this->XMLStringToObject($response->getBody()->getContents());
 
         return $this;
+    }
+
+    protected function accepts2DPayments(): bool
+    {
+        return $this->getConfig()['allow_2D'] ?? false;
     }
 }

@@ -144,6 +144,7 @@ return [
                     'test'          => 'https://3dsecuretest.vakifbank.com.tr:4443/MPIAPI/MPI_Enrollment.aspx',
                 ],
             ],
+            'allow_2D' => false // Decide the action when customer try to make 3d payment with non-3d card
         ]
     ],
 ];
