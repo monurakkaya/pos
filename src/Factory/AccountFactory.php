@@ -4,6 +4,7 @@
 namespace Mews\Pos\Factory;
 
 
+use Mews\Pos\Entity\Account\BoaPosAccount;
 use Mews\Pos\Entity\Account\EstPosAccount;
 use Mews\Pos\Entity\Account\GarantiPosAccount;
 use Mews\Pos\Entity\Account\Get724PosAccount;
@@ -108,6 +109,12 @@ class AccountFactory
     public static function createGet724PosAccount(string $bank, string $clientId, string $username, string $password, string $merchantId, string $terminalNo, string $model = 'regular', ?string $storeKey = null, string $lang = 'tr'): Get724PosAccount
     {
         return new Get724PosAccount($bank, $model, $merchantId, $terminalNo, $password, $lang, $storeKey);
+    }
+
+
+    public static function createBoaPosAccount(string $bank, string $customerId, string $username, string $password, string $merchantId, string $model = 'regular', $storeKey = null, $lang = 'tr'): BoaPosAccount
+    {
+        return new BoaPosAccount($bank, $model, $customerId, $username, $password, $merchantId, $lang, $storeKey);
     }
 
     private static function checkParameters($model, $storeKey)
