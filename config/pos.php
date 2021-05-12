@@ -145,6 +145,18 @@ return [
                 ],
             ],
             'allow_2D' => false // Decide the action when customer try to make 3d payment with non-3d card
+        ],
+        'kuveytturk' => [
+            'name' => 'Kuveyt Türk Katılım Bankası A.Ş.',
+            'class' => \Mews\Pos\Gateways\BoaPos::class,
+            'urls' => [
+                'production' => 'https://boa.kuveytturk.com.tr/sanalposservice/Home/ThreeDModelPayGate',
+                'test' => 'https://boatest.kuveytturk.com.tr/boa.virtualpos.services',
+                'gateway' => [
+                    'production' => 'https://boa.kuveytturk.com.tr/sanalposservice/Home/ThreeDModelProvisionGate',
+                    'test' => 'https://boatest.kuveytturk.com.tr/boa.virtualpos.services'
+                ]
+            ]
         ]
     ],
 ];

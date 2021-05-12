@@ -80,7 +80,7 @@ class BoaPos extends AbstractGateway
     /**
      * @inheritDoc
      */
-    public function createXML(array $data, $encoding = 'ISO-8859-9'): string
+    public function createXML(array $data, $encoding = 'ISO-8859-1'): string
     {
         return parent::createXML(['KuveytTurkVPosMessage' => $data], $encoding);
     }
@@ -94,40 +94,21 @@ class BoaPos extends AbstractGateway
     {
 
         $hashStr = $this->account->getMerchantId() . $this->order->id . $this->order->amount . $this->order->success_url . $this->order->fail_url . $this->account->getUsername() . $this->account->getHashedPassword();
-
         return base64_encode(sha1($hashStr, true));
     }
 
     /**
-     * Check 3D Hash
-     * @param array $data
+     * Create 3D Response Hash
      *
-     * @return bool
+     * @return string
      */
-    public function check3DHash($data)
+    public function create3DResponseHash()
     {
-        $hashParams = $data['HASHPARAMS'];
-        $hashParamsVal = $data['HASHPARAMSVAL'];
-        $hashParam = $data['HASH'];
-        $paramsVal = '';
 
-        $hashParamsArr = explode(':', $hashParams);
-        foreach ($hashParamsArr as $value) {
-            if (!empty($value) && isset($data[$value])) {
-                $paramsVal = $paramsVal.$data[$value];
-            }
-        }
-
-        $hashVal = $paramsVal.$this->account->getStoreKey();
-        $hash = base64_encode(sha1($hashVal, true));
-
-        $return = false;
-        if ($hashParams && !($paramsVal !== $hashParamsVal || $hashParam !== $hash)) {
-            $return = true;
-        }
-
-        return $return;
+        $hashStr = $this->account->getMerchantId() . $this->order->id . $this->order->amount . $this->account->getUsername() . $this->account->getHashedPassword();
+        return base64_encode(sha1($hashStr, true));
     }
+
 
     /**
      * @inheritDoc
@@ -135,16 +116,37 @@ class BoaPos extends AbstractGateway
     public function make3DPayment()
     {
         $request = Request::createFromGlobals();
-
-
-        if ($this->check3DHash($request->request->all())) {
-            $contents = $this->create3DPaymentXML($request->request->all());
-            $this->send($contents);
+        $response = json_decode(json_encode($this->XMLStringToObject(urldecode($request->request->get('AuthenticationResponse')))), true);
+        if ($response['ResponseCode'] === '00') {
+            $contents = $this->create3DPaymentXML($response);
+            $this->send($contents, $this->get3DGatewayURL());
+            $this->data = $this->XMLStringToObject($this->data);
         }
 
-        $this->response = $this->map3DPaymentData($request->request->all(), $this->data);
+        $this->response = $this->map3DPaymentData($response, $this->data);
 
         return $this;
+    }
+
+    /**
+     * @inheritDoc
+     */
+    protected function map3DPaymentData($raw3DAuthResponseData, $rawPaymentResponseData)
+    {
+        $transactionSecurity = 'MPI fallback';
+        if ($this->getResponseCode() === '00') {
+            $transactionSecurity = $rawPaymentResponseData->VPosMessage->TransactionSecurity == 3 ? '3D Secure': '2D';
+        }
+
+        $paymentResponseData = $this->mapPaymentResponse($rawPaymentResponseData);
+
+        $threeDResponse = [
+            'transaction_security' => $transactionSecurity,
+            '3d_all' => $raw3DAuthResponseData
+        ];
+
+        return (object) array_merge($threeDResponse, $paymentResponseData);
+
     }
 
     /**
@@ -175,47 +177,40 @@ class BoaPos extends AbstractGateway
         $data = [];
 
         if ($this->order) {
-            $this->order->hash = $this->create3DHash();
             $xml = $this->createRegularPaymentXML();
             $this->send($xml);
-            $data = [
-                'gateway' => $this->get3DGatewayURL(),
-                'inputs' => $inputs,
-            ];
+            $data = $this->data;
         }
-
         return $data;
     }
 
     /**
      * @inheritDoc
      */
-    public function send($contents)
+    public function send($contents, $url = null)
     {
+        if (is_null($url)) {
+            $url = $this->getApiURL();
+        } else {
+            $url = $this->get3DGatewayURL();
+        }
         $client = new Client();
 
-        $response = $client->request('POST', $this->getApiURL(), [
-            'body' => $contents,
+        $response = $client->request('POST', $url, [
+            'headers' => [
+                'Content-type' => 'application/xml'
+            ],
+            'body' => $contents
         ]);
 
-        $this->data = $this->XMLStringToObject($response->getBody()->getContents());
+        $this->data = $response->getBody()->getContents();
 
         return $this;
     }
 
-    /**
-     * @inheritDoc
-     */
-    public function history(array $meta)
-    {
-        $xml = $this->createHistoryXML($meta);
 
-        $this->send($xml);
 
-        $this->response = $this->mapHistoryResponse($this->data);
 
-        return $this;
-    }
 
     /**
      * @return mixed
@@ -226,7 +221,7 @@ class BoaPos extends AbstractGateway
     }
 
     /**
-     * @return CreditCardEstPos|null
+     * @return CreditCardBoaPos|null
      */
     public function getCard()
     {
@@ -236,47 +231,35 @@ class BoaPos extends AbstractGateway
     /**
      * @inheritDoc
      */
-    public function createRegularPaymentXML()
+    public function createRegularPaymentXML(): string
     {
         $requestData = [
             'APIVersion' => self::API_VERSION,
             'OkUrl' => $this->order->success_url,
             'FailUrl' => $this->order->fail_url,
-            'HashData' => $this->order->hash,
-            'MerchantId' => $this->account->getMerchantId(),
-            'CustomerId' => $this->account->getCustomerId(),
-            'UserName' => $this->account->getUsername(),
             'CardNumber' => $this->card->getNumber(),
             'CardExpireDateMonth' => $this->card->getExpireMonth(),
             'CardExpireDateYear' => $this->card->getExpireYear(),
             'CardCVV2' => $this->card->getCvv(),
             'CardHolderName' => $this->card->getHolderName(),
             'BatchID' => '0',
+            'DisplayAmount' => $this->order->amount,
+            'HashData' => $this->create3DHash(),
+            'MerchantId' => $this->account->getMerchantId(),
+            'CustomerId' => $this->account->getCustomerId(),
+            'UserName' => $this->account->getUsername(),
             'TransactionType' => $this->type,
             'InstallmentCount' => $this->order->installment,
             'Amount' => $this->order->amount,
             'CurrencyCode' => $this->order->currency,
-            'MerchantOrderId' => $this->order->id
+            'MerchantOrderId' => $this->order->id,
+            'TransactionSecurity' => 3,
+            'CardType' => 'MasterCard'
         ];
 
         return $this->createXML($requestData);
     }
 
-    /**
-     * @inheritDoc
-     */
-    public function createRegularPostXML()
-    {
-        $requestData = [
-            'Name' => $this->account->getUsername(),
-            'Password' => $this->account->getPassword(),
-            'ClientId' => $this->account->getClientId(),
-            'Type' => $this->types[self::TX_POST_PAY],
-            'OrderId' => $this->order->id,
-        ];
-
-        return $this->createXML($requestData);
-    }
 
     /**
      * @inheritDoc
@@ -284,170 +267,39 @@ class BoaPos extends AbstractGateway
     public function create3DPaymentXML($responseData)
     {
         $requestData = [
-            'Name' => $this->account->getUsername(),
-            'Password' => $this->account->getPassword(),
-            'ClientId' => $this->account->xgetClientId(),
-            'Type' => $this->type,
-            'IPAddress' => $this->order->ip,
-            'Email' => $this->order->email,
-            'OrderId' => $this->order->id,
-            'UserId' => isset($this->order->user_id) ? $this->order->user_id : null,
-            'Total' => $this->order->amount,
-            'Currency' => $this->order->currency,
-            'Taksit' => $this->order->installment,
-            'Number' => $responseData['md'],
-            'Expires' => '',
-            'Cvv2Val' => '',
-            'PayerTxnId' => $responseData['xid'],
-            'PayerSecurityLevel' => $responseData['eci'],
-            'PayerAuthenticationCode' => $responseData['cavv'],
-            'CardholderPresentCode' => '13',
-            'Mode' => 'P',
-            'GroupId' => '',
-            'TransId' => '',
-        ];
-
-        if ($this->order->name) {
-            $requestData['BillTo'] = [
-                'Name' => $this->order->name,
-            ];
-        }
-
-        return $this->createXML($requestData);
-    }
-
-    /**
-     * @inheritDoc
-     */
-    public function createStatusXML()
-    {
-        $requestData = [
-            'Name' => $this->account->getUsername(),
-            'Password' => $this->account->getPassword(),
-            'ClientId' => $this->account->getClientId(),
-            'OrderId' => $this->order->id,
-            'Extra' => [
-                $this->types[self::TX_STATUS] => 'QUERY',
-            ],
+            'HashData' => $this->create3DResponseHash(),
+            'MerchantId' => $this->account->getMerchantId(),
+            'CustomerId' => $this->account->getCustomerId(),
+            'UserName' => $this->account->getUsername(),
+            'TransactionType' => $this->type,
+            'InstallmentCount' => $this->order->installment,
+            'Amount' => $this->order->amount,
+            'CurrencyCode' => $this->order->currency,
+            'MerchantOrderId' => $this->order->id,
+            'TransactionSecurity' => 3,
+            'KuveytTurkVPosAdditionalData' => [
+                'AdditionalData' => [
+                    'Key' => 'MD',
+                    'Data' => (string)$responseData['MD']
+                ]
+            ]
         ];
 
         return $this->createXML($requestData);
     }
 
-    /**
-     * @inheritDoc
-     */
-    public function createHistoryXML($customQueryData)
-    {
-        $requestData = [
-            'Name' => $this->account->getUsername(),
-            'Password' => $this->account->getPassword(),
-            'ClientId' => $this->account->getClientId(),
-            'OrderId' => $this->order->id,
-            'Extra' => [
-                $this->types[self::TX_HISTORY] => 'QUERY',
-            ],
-        ];
-
-        return $this->createXML($requestData);
-    }
 
     /**
-     * @inheritDoc
-     */
-    public function createCancelXML()
-    {
-        $requestData = [
-            'Name' => $this->account->getUsername(),
-            'Password' => $this->account->getPassword(),
-            'ClientId' => $this->account->getClientId(),
-            'OrderId' => $this->order->id,
-            'Type' => $this->types[self::TX_CANCEL],
-        ];
-
-        return $this->createXML($requestData);
-    }
-
-    /**
-     * @inheritDoc
-     */
-    public function createRefundXML()
-    {
-        $requestData = [
-            'Name' => $this->account->getUsername(),
-            'Password' => $this->account->getPassword(),
-            'ClientId' => $this->account->getClientId(),
-            'OrderId' => $this->order->id,
-            'Type' => $this->types[self::TX_REFUND],
-        ];
-
-        if (isset($this->order->amount)) {
-            $requestData['Total'] = $this->order->amount;
-        }
-
-        return $this->createXML($requestData);
-    }
-
-    /**
-     * Get ProcReturnCode
+     * Get ResponseCode
      *
      * @return string|null
      */
-    protected function getProcReturnCode()
+    protected function getResponseCode()
     {
-        return isset($this->data->ProcReturnCode) ? (string) $this->data->ProcReturnCode : null;
+        return isset($this->data->ResponseCode) ? (string) $this->data->ResponseCode : null;
     }
 
-    /**
-     * Get Status Detail Text
-     *
-     * @return string|null
-     */
-    protected function getStatusDetail()
-    {
-        $procReturnCode = $this->getProcReturnCode();
 
-        return $procReturnCode ? (isset($this->codes[$procReturnCode]) ? (string) $this->codes[$procReturnCode] : null) : null;
-    }
-
-    /**
-     * @inheritDoc
-     */
-    protected function map3DPaymentData($raw3DAuthResponseData, $rawPaymentResponseData)
-    {
-        $transactionSecurity = 'MPI fallback';
-        if ($this->getProcReturnCode() === '00') {
-            if ($raw3DAuthResponseData['mdStatus'] == '1') {
-                $transactionSecurity = 'Full 3D Secure';
-            } elseif (in_array($raw3DAuthResponseData['mdStatus'], [2, 3, 4])) {
-                $transactionSecurity = 'Half 3D Secure';
-            }
-        }
-
-        $paymentResponseData = $this->mapPaymentResponse($rawPaymentResponseData);
-
-        $threeDResponse = [
-            'transaction_security' => $transactionSecurity,
-            'md_status' => $raw3DAuthResponseData['mdStatus'],
-            'hash' => (string) $raw3DAuthResponseData['HASH'],
-            'rand' => (string) $raw3DAuthResponseData['rnd'],
-            'hash_params' => (string) $raw3DAuthResponseData['HASHPARAMS'],
-            'hash_params_val' => (string) $raw3DAuthResponseData['HASHPARAMSVAL'],
-            'masked_number' => (string) $raw3DAuthResponseData['maskedCreditCard'],
-            'month' => (string) $raw3DAuthResponseData['Ecom_Payment_Card_ExpDate_Month'],
-            'year' => (string) $raw3DAuthResponseData['Ecom_Payment_Card_ExpDate_Year'],
-            'amount' => (string) $raw3DAuthResponseData['amount'],
-            'currency' => (string) $raw3DAuthResponseData['currency'],
-            'eci' => (string) $raw3DAuthResponseData['eci'],
-            'cavv' => (string) $raw3DAuthResponseData['cavv'],
-            'xid' => (string) $raw3DAuthResponseData['oid'],
-            'md_error_message' => (string) $raw3DAuthResponseData['mdErrorMsg'],
-            'name' => (string) $raw3DAuthResponseData['firmaadi'],
-            '3d_all' => $raw3DAuthResponseData,
-        ];
-
-        return (object) array_merge($threeDResponse, $paymentResponseData);
-    }
 
     /**
      * @inheritDoc
@@ -509,91 +361,7 @@ class BoaPos extends AbstractGateway
         ];
     }
 
-    /**
-     * @inheritDoc
-     */
-    protected function mapRefundResponse($rawResponseData)
-    {
-        $status = 'declined';
-        if ($this->getProcReturnCode() === '00') {
-            $status = 'approved';
-        }
 
-        return (object) [
-            'order_id' => isset($rawResponseData->OrderId) ? $rawResponseData->OrderId : null,
-            'group_id' => isset($rawResponseData->GroupId) ? $rawResponseData->GroupId : null,
-            'response' => isset($rawResponseData->Response) ? $rawResponseData->Response : null,
-            'auth_code' => isset($rawResponseData->AuthCode) ? $rawResponseData->AuthCode : null,
-            'host_ref_num' => isset($rawResponseData->HostRefNum) ? $rawResponseData->HostRefNum : null,
-            'proc_return_code' => isset($rawResponseData->ProcReturnCode) ? $rawResponseData->ProcReturnCode : null,
-            'trans_id' => isset($rawResponseData->TransId) ? $rawResponseData->TransId : null,
-            'error_code' => isset($rawResponseData->Extra->ERRORCODE) ? $rawResponseData->Extra->ERRORCODE : null,
-            'error_message' => isset($rawResponseData->ErrMsg) ? $rawResponseData->ErrMsg : null,
-            'status' => $status,
-            'status_detail' => $this->getStatusDetail(),
-            'all' => $rawResponseData,
-        ];
-    }
-
-    /**
-     * @inheritDoc
-     */
-    protected function mapCancelResponse($rawResponseData)
-    {
-        $status = 'declined';
-        if ($this->getProcReturnCode() === '00') {
-            $status = 'approved';
-        }
-
-        $this->response = (object) [
-            'order_id' => isset($rawResponseData->OrderId) ? $rawResponseData->OrderId : null,
-            'group_id' => isset($rawResponseData->GroupId) ? $rawResponseData->GroupId : null,
-            'response' => isset($rawResponseData->Response) ? $rawResponseData->Response : null,
-            'auth_code' => isset($rawResponseData->AuthCode) ? $rawResponseData->AuthCode : null,
-            'host_ref_num' => isset($rawResponseData->HostRefNum) ? $rawResponseData->HostRefNum : null,
-            'proc_return_code' => isset($rawResponseData->ProcReturnCode) ? $rawResponseData->ProcReturnCode : null,
-            'trans_id' => isset($rawResponseData->TransId) ? $rawResponseData->TransId : null,
-            'error_code' => isset($rawResponseData->Extra->ERRORCODE) ? $rawResponseData->Extra->ERRORCODE : null,
-            'error_message' => isset($rawResponseData->ErrMsg) ? $rawResponseData->ErrMsg : null,
-            'status' => $status,
-            'status_detail' => $this->getStatusDetail(),
-            'all' => $rawResponseData,
-        ];
-    }
-
-    /**
-     * @inheritDoc
-     */
-    protected function mapStatusResponse($rawResponseData)
-    {
-        $status = 'declined';
-        if ($this->getProcReturnCode() === '00') {
-            $status = 'approved';
-        }
-
-        $firstAmount = isset($rawResponseData->Extra->ORIG_TRANS_AMT) ? $this->printData($rawResponseData->Extra->ORIG_TRANS_AMT) : null;
-        $captureAmount = isset($rawResponseData->Extra->CAPTURE_AMT) ? $this->printData($rawResponseData->Extra->CAPTURE_AMT) : null;
-        $capture = $firstAmount === $captureAmount ? true : false;
-
-        return (object) [
-            'order_id' => isset($rawResponseData->OrderId) ? $this->printData($rawResponseData->OrderId) : null,
-            'response' => isset($rawResponseData->Response) ? $this->printData($rawResponseData->Response) : null,
-            'proc_return_code' => isset($rawResponseData->ProcReturnCode) ? $this->printData($rawResponseData->ProcReturnCode) : null,
-            'trans_id' => isset($rawResponseData->TransId) ? $this->printData($rawResponseData->TransId) : null,
-            'error_message' => isset($rawResponseData->ErrMsg) ? $this->printData($rawResponseData->ErrMsg) : null,
-            'host_ref_num' => isset($rawResponseData->Extra->HOST_REF_NUM) ? $this->printData($rawResponseData->Extra->HOST_REF_NUM) : null,
-            'order_status' => isset($rawResponseData->Extra->ORDERSTATUS) ? $this->printData($rawResponseData->Extra->ORDERSTATUS) : null,
-            'process_type' => isset($rawResponseData->Extra->CHARGE_TYPE_CD) ? $this->printData($rawResponseData->Extra->CHARGE_TYPE_CD) : null,
-            'pan' => isset($rawResponseData->Extra->PAN) ? $this->printData($rawResponseData->Extra->PAN) : null,
-            'num_code' => isset($rawResponseData->Extra->NUMCODE) ? $this->printData($rawResponseData->Extra->NUMCODE) : null,
-            'first_amount' => $firstAmount,
-            'capture_amount' => $captureAmount,
-            'status' => $status,
-            'status_detail' => $this->getStatusDetail(),
-            'capture' => $capture,
-            'all' => $rawResponseData,
-        ];
-    }
 
     /**
      * @inheritDoc
@@ -601,28 +369,20 @@ class BoaPos extends AbstractGateway
     protected function mapPaymentResponse($responseData)
     {
         $status = 'declined';
-        if ($this->getProcReturnCode() === '00') {
+        if ($this->getResponseCode() === '00') {
             $status = 'approved';
         }
 
        return [
-            'id' => isset($responseData->AuthCode) ? $this->printData($responseData->AuthCode) : null,
+            'id' => isset($responseData->ProvisionNumber) ? $this->printData($responseData->ProvisionNumber) : null,
             'order_id' => isset($responseData->OrderId) ? $this->printData($responseData->OrderId) : null,
-            'group_id' => isset($responseData->GroupId) ? $this->printData($responseData->GroupId) : null,
-            'trans_id' => isset($responseData->TransId) ? $this->printData($responseData->TransId) : null,
+            'trans_id' => isset($responseData->ProvisionNumber) ? $this->printData($responseData->ProvisionNumber) : null,
             'response' => isset($responseData->Response) ? $this->printData($responseData->Response) : null,
             'transaction_type' => $this->type,
             'transaction' => $this->type,
-            'auth_code' => isset($responseData->AuthCode) ? $this->printData($responseData->AuthCode) : null,
-            'host_ref_num' => isset($responseData->HostRefNum) ? $this->printData($responseData->HostRefNum) : null,
-            'proc_return_code' => isset($responseData->ProcReturnCode) ? $this->printData($responseData->ProcReturnCode) : null,
-            'code' => isset($responseData->ProcReturnCode) ? $this->printData($responseData->ProcReturnCode) : null,
             'status' => $status,
-            'status_detail' => $this->getStatusDetail(),
-            'error_code' => isset($responseData->Extra->ERRORCODE) ? $this->printData($responseData->Extra->ERRORCODE) : null,
-            'error_message' => isset($responseData->Extra->ERRORCODE) ? $this->printData($responseData->ErrMsg) : null,
-            'campaign_url' => null,
-            'extra' => isset($responseData->Extra) ? $responseData->Extra : null,
+            'error_code' => $this->getResponseCode() !== '00' ? $this->getResponseCode() : null,
+            'error_message' => $this->getResponseCode() !== '00' ? $this->printData($responseData->ResponseMessage) : null,
             'all' => $responseData,
         ];
     }
@@ -722,4 +482,90 @@ class BoaPos extends AbstractGateway
     {
         return round($amount, 2) * 100;
     }
+
+
+
+    /**
+     * @inheritDoc
+     */
+    public function history(array $meta)
+    {
+
+    }
+
+
+    /**
+     * @inheritDoc
+     */
+    public function createRegularPostXML()
+    {
+
+    }
+
+
+    /**
+     * @inheritDoc
+     */
+    public function createStatusXML()
+    {
+
+    }
+
+    /**
+     * @inheritDoc
+     */
+    public function createHistoryXML($customQueryData)
+    {
+
+    }
+
+    /**
+     * @inheritDoc
+     */
+    public function createCancelXML()
+    {
+
+    }
+
+    /**
+     * @inheritDoc
+     */
+    public function createRefundXML()
+    {
+
+    }
+
+    /**
+     * Get Status Detail Text
+     *
+     * @return string|null
+     */
+    protected function getStatusDetail()
+    {
+
+    }
+    /**
+     * @inheritDoc
+     */
+    protected function mapRefundResponse($rawResponseData)
+    {
+
+    }
+
+    /**
+     * @inheritDoc
+     */
+    protected function mapCancelResponse($rawResponseData)
+    {
+
+    }
+
+    /**
+     * @inheritDoc
+     */
+    protected function mapStatusResponse($rawResponseData)
+    {
+
+    }
+
 }
